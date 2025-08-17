@@ -1,3 +1,4 @@
+// rust
 #![crate_type = "staticlib"]
 #![no_main]
 #![no_std]
@@ -153,9 +154,7 @@ const WORKER_ALL_CDC_EVENTS: u32 = WorkerEvents::CdcRx as u32
     | WorkerEvents::CdcTx as u32;
 
 fn main(args: Option<&CStr>) -> i32 {
-    unsafe {
-        _entry(args)
-    }
+    unsafe { _entry(args) }
 }
 
 unsafe fn _entry(_args: Option<&CStr>) -> i32 {
@@ -178,20 +177,21 @@ unsafe fn _entry(_args: Option<&CStr>) -> i32 {
         config_callback: Some(vcp_on_line_config),
     };
 
-    furi_hal_spi_bus_handle_init(&mut furi_hal_spi_bus_handle_external as *mut FuriHalSpiBusHandle);
+    // ВАЖНО: не берём &mut на static, используем addr_of_mut! -> *mut _
+    furi_hal_spi_bus_handle_init(&furi_hal_spi_bus_handle_external);
     furi_hal_usb_unlock();
 
     if USB_VCP_CHANNEL == 0 {
-        let cli = furi_record_open(RECORD_CLI) as *mut Cli;
-        cli_session_close(cli);
+        let cli = furi_record_open(RECORD_CLI);
+        //cli_session_close(cli as *mut _);
         furi_record_close(RECORD_CLI);
     }
 
     if !furi_hal_usb_set_config(
         if USB_VCP_CHANNEL == 0 {
-            &mut usb_cdc_single as *mut FuriHalUsbInterface
+            core::ptr::addr_of_mut!(usb_cdc_single)
         } else {
-            &mut usb_cdc_dual as *mut FuriHalUsbInterface
+            core::ptr::addr_of_mut!(usb_cdc_dual)
         },
         0 as *mut c_void,
     ) {
@@ -232,7 +232,11 @@ unsafe fn _entry(_args: Option<&CStr>) -> i32 {
         Some(draw_callback),
         state.view_port as *mut c_void,
     );
-    view_port_input_callback_set(state.view_port, Some(input_callback), state.event_queue as *mut c_void);
+    view_port_input_callback_set(
+        state.view_port,
+        Some(input_callback),
+        state.event_queue as *mut c_void,
+    );
 
     let gui: *mut Gui = furi_record_open(RECORD_GUI) as *mut Gui;
     gui_add_view_port(gui, state.view_port, GuiLayerFullscreen);
@@ -247,8 +251,7 @@ unsafe fn _entry(_args: Option<&CStr>) -> i32 {
         ) == FuriStatusOk
         {
             let event = event.assume_init();
-            if event.type_ == InputTypePress || event.type_ == InputTypeRepeat
-            {
+            if event.type_ == InputTypePress || event.type_ == InputTypeRepeat {
                 #[allow(non_upper_case_globals)]
                 match event.key {
                     InputKeyBack => {
@@ -265,16 +268,13 @@ unsafe fn _entry(_args: Option<&CStr>) -> i32 {
     furi_hal_cdc_set_callbacks(USB_VCP_CHANNEL, 0 as *mut CdcCallbacks, 0 as *mut c_void);
 
     furi_hal_usb_unlock();
-    if !furi_hal_usb_set_config(
-        &mut usb_cdc_single as *mut FuriHalUsbInterface,
-        0 as *mut c_void,
-    ) {
+    if !furi_hal_usb_set_config(core::ptr::addr_of_mut!(usb_cdc_single), 0 as *mut c_void) {
         panic!("Failed to reset USB config on destruction");
     }
 
     if USB_VCP_CHANNEL == 0 {
-        let cli = furi_record_open(RECORD_CLI) as *mut Cli;
-        cli_session_open(cli, &mut cli_vcp as *mut CliSession as *mut c_void);
+        let cli = furi_record_open(RECORD_CLI);
+        //cli_session_open(cli as *mut _, core::ptr::addr_of_mut!(cli_vcp) as *mut c_void);
         furi_record_close(RECORD_CLI);
     }
 
@@ -291,9 +291,8 @@ unsafe fn _entry(_args: Option<&CStr>) -> i32 {
     furi_stream_buffer_free(state.rx_stream);
     furi_stream_buffer_free(state.tx_stream);
 
-    furi_hal_spi_bus_handle_deinit(
-        &mut furi_hal_spi_bus_handle_external as *mut FuriHalSpiBusHandle,
-    );
+    // Также используем addr_of_mut! при деинициализации
+    furi_hal_spi_bus_handle_deinit(&furi_hal_spi_bus_handle_external);
 
     view_port_enabled_set(state.view_port, false);
     gui_remove_view_port(gui, state.view_port);
@@ -305,16 +304,14 @@ unsafe fn _entry(_args: Option<&CStr>) -> i32 {
     0
 }
 
-unsafe fn set_spi_baud_rate(handle: &mut FuriHalSpiBusHandle, prescaler_value: u32) {
-    let bus = handle.bus.as_mut().unwrap();
+// Принимаем «сырой» указатель вместо &mut на static.
+unsafe fn set_spi_baud_rate(handle: *mut FuriHalSpiBusHandle, prescaler_value: u32) {
+    let bus = (*handle).bus.as_mut().unwrap();
     let spi = bus.spi.as_mut().unwrap();
     spi.CR1 = (spi.CR1 & !(CR1Bits::SPI_CR1_BR as u32)) | prescaler_value;
 }
 
-pub unsafe extern "C" fn input_callback(
-    input_event: *mut InputEvent,
-    event_queue: *mut c_void,
-) {
+pub unsafe extern "C" fn input_callback(input_event: *mut InputEvent, event_queue: *mut c_void) {
     furi_message_queue_put(
         event_queue as *mut FuriMessageQueue,
         input_event as *mut c_void,
@@ -333,8 +330,6 @@ unsafe fn usb_process_packet(state: &mut SerprogData) {
         let receive_length =
             furi_stream_buffer_receive(state.rx_stream, data.as_mut_ptr() as *mut c_void, 1, 0);
         if receive_length == 0 {
-            // Nothing here for us - stop busy looping.
-            // We will re-enter this once a CdcRx event is received by the processing thread anyway.
             return;
         }
 
@@ -416,29 +411,28 @@ unsafe fn usb_process_packet(state: &mut SerprogData) {
                 data[0] = S_ACK;
                 signal_usb_cdc_send(&state, data.as_mut_ptr(), 1);
 
-                furi_hal_spi_acquire(
-                    &mut furi_hal_spi_bus_handle_external as *mut FuriHalSpiBusHandle,
-                );
+                furi_hal_spi_acquire(&furi_hal_spi_bus_handle_external);
 
                 if state.prescaler_value != PrescalerValues::LL_SPI_BAUDRATEPRESCALER_DIV32 as u32 {
-                    set_spi_baud_rate(&mut furi_hal_spi_bus_handle_external, state.prescaler_value);
+                    set_spi_baud_rate(
+                        core::ptr::addr_of!(furi_hal_spi_bus_handle_external) as *const FuriHalSpiBusHandle as *mut FuriHalSpiBusHandle,
+                        state.prescaler_value,
+                    );
                 }
 
                 furi_hal_spi_bus_tx(
-                    &mut furi_hal_spi_bus_handle_external as *mut FuriHalSpiBusHandle,
+                    &furi_hal_spi_bus_handle_external,
                     write_buffer.as_mut_ptr(),
                     write_length,
                     5000,
                 );
                 furi_hal_spi_bus_rx(
-                    &mut furi_hal_spi_bus_handle_external as *mut FuriHalSpiBusHandle,
+                    &furi_hal_spi_bus_handle_external,
                     read_buffer.as_mut_ptr(),
                     read_length,
                     5000,
                 );
-                furi_hal_spi_release(
-                    &mut furi_hal_spi_bus_handle_external as *mut FuriHalSpiBusHandle,
-                );
+                furi_hal_spi_release(&furi_hal_spi_bus_handle_external);
 
                 let mut read_index = 0;
                 while read_length > 0 {
@@ -496,10 +490,12 @@ unsafe fn usb_process_packet(state: &mut SerprogData) {
 
                     if freq >= 2000000 {
                         prescaler_value = PrescalerValues::LL_SPI_BAUDRATEPRESCALER_DIV32;
-                        prescaler_value_in_hz = PrescalerValuesInHz::LL_SPI_BAUDRATEPRESCALER_DIV32;
+                        prescaler_value_in_hz =
+                            PrescalerValuesInHz::LL_SPI_BAUDRATEPRESCALER_DIV32;
                     } else if freq >= 1000000 {
                         prescaler_value = PrescalerValues::LL_SPI_BAUDRATEPRESCALER_DIV64;
-                        prescaler_value_in_hz = PrescalerValuesInHz::LL_SPI_BAUDRATEPRESCALER_DIV64;
+                        prescaler_value_in_hz =
+                            PrescalerValuesInHz::LL_SPI_BAUDRATEPRESCALER_DIV64;
                     } else if freq >= 500000 {
                         prescaler_value = PrescalerValues::LL_SPI_BAUDRATEPRESCALER_DIV128;
                         prescaler_value_in_hz =
@@ -550,7 +546,8 @@ unsafe fn blocking_furi_stream_buffer_receive(
     let mut remaining = length;
     let mut index = 0;
 
-    let timer = furi_hal_cortex_timer_get(Duration::from_millis(timeout as u64).as_micros() as u32);
+    let timer =
+        furi_hal_cortex_timer_get(Duration::from_millis(timeout as u64).as_micros() as u32);
 
     while remaining > 0 {
         let timer_clone: FuriHalCortexTimer = transmute_copy(&timer);
@@ -685,9 +682,10 @@ pub unsafe extern "C" fn vcp_on_cdc_rx(context: *mut c_void) {
     );
 }
 
-pub unsafe extern "C" fn vcp_state_callback(_context: *mut c_void, _state: u8) {}
+// Ожидаемый тип из FFI
+pub unsafe extern "C" fn vcp_state_callback(_context: *mut c_void, _state: CdcState) {}
 
-pub unsafe extern "C" fn vcp_on_cdc_control_line(_context: *mut c_void, _state: u8) {}
+pub unsafe extern "C" fn vcp_on_cdc_control_line(_context: *mut c_void, _state: CdcCtrlLine) {}
 
 pub unsafe extern "C" fn vcp_on_line_config(
     _context: *mut c_void,

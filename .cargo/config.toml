@@ -1,3 +1,9 @@
+[toolchain]
+channel = "nightly"
+# Ensure the cross target is available (and your host toolchain too for dev tools)
+targets = ["thumbv7em-none-eabihf"]
+components = ["rust-src"]
+
 [target.thumbv7em-none-eabihf]
 rustflags = [
     # CPU is Cortex-M4 (STM32WB55)
